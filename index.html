@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>A Day's Work</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<!-- Menu -->
+<section id="menu" class="screen">
+  <div class="menu-inner">
+    <p class="kicker">A Day's Work</p>
+    <div class="selector">
+      <button class="arrow" id="prev" aria-label="Previous job">&#8249;</button>
+      <div class="job">
+        <h1 id="job-title"></h1>
+        <p class="task" id="job-task"></p>
+      </div>
+      <button class="arrow" id="next" aria-label="Next job">&#8250;</button>
+    </div>
+    <p class="blurb" id="job-blurb"></p>
+    <dl class="facts" id="job-facts"></dl>
+    <div class="actions">
+      <button class="primary" id="btn-start">Start the day</button>
+      <button id="btn-watch">Watch the simulation</button>
+      <button id="btn-reset" class="quiet" hidden>Start over</button>
+    </div>
+    <p class="dots" id="dots"></p>
+    <p class="foot">No upgrades. &nbsp;&larr; &rarr; choose &middot; Enter start &middot; S watch</p>
+  </div>
+</section>
+
+<!-- Work HUD -->
+<section id="hud" hidden>
+  <div class="hud-tl">
+    <div class="clock" id="h-clock">09:00</div>
+    <div id="h-worked"></div>
+    <div id="h-pace" class="muted"></div>
+  </div>
+  <div class="hud-tr">
+    <div class="big" id="h-left"></div>
+    <div id="h-carry"></div>
+    <div class="hud-buttons">
+      <button id="btn-break">Break (B)</button>
+      <button id="btn-menu">Menu (Esc)</button>
+    </div>
+  </div>
+  <div class="hud-bottom">
+    <div id="h-hint"></div>
+    <div class="bar"><div id="h-bar"></div></div>
+  </div>
+  <button id="btn-work" class="work-btn">hold<br>to work</button>
+</section>
+
+<!-- Watch HUD -->
+<section id="watch" hidden>
+  <div class="hud-tl">
+    <p class="kicker">Simulation &middot; <span id="w-title"></span></p>
+    <div class="clock" id="w-clock">09:00</div>
+    <div id="w-stats"></div>
+  </div>
+  <div class="hud-tr">
+    <div class="speeds" id="w-speeds"></div>
+    <div class="hud-buttons">
+      <button id="w-pause">Pause (Space)</button>
+      <button id="w-restart">Restart (R)</button>
+      <button id="w-menu">Menu (Esc)</button>
+    </div>
+  </div>
+  <figure class="chart">
+    <figcaption>Each trip to the <span id="w-depot"></span>, how long it took &middot; the work moves away from you</figcaption>
+    <canvas id="w-chart"></canvas>
+    <div class="tip" id="w-tip" hidden></div>
+  </figure>
+</section>
+
+<!-- Break -->
+<section id="break" class="screen" hidden>
+  <div class="menu-inner narrow">
+    <p class="kicker">Break</p>
+    <h1>Go. Stretch. Drink water.</h1>
+    <p class="blurb">The clock on the wall keeps moving. The work timer doesn't.<br>Breaks are not paid.</p>
+    <p class="clock" id="b-time">0:00:00</p>
+    <div class="actions"><button class="primary" id="btn-back">Back to work</button></div>
+  </div>
+</section>
+
+<!-- End -->
+<section id="end" class="screen" hidden>
+  <div class="menu-inner narrow">
+    <p class="kicker" id="e-kicker"></p>
+    <h1 id="e-title"></h1>
+    <dl class="facts" id="e-facts"></dl>
+    <p class="pay" id="e-pay"></p>
+    <p class="good">Good job.</p>
+    <p class="blurb" id="e-days"></p>
+    <p class="foot" id="e-foot"></p>
+    <div class="actions"><button class="primary" id="btn-end-menu">Go home</button></div>
+  </div>
+</section>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

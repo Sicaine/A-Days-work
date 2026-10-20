@@ -1,0 +1,14 @@
+{
+  "name": "a-days-work",
+  "version": "1.0.0",
+  "description": "An idle game without upgrades. One ordinary workday, by hand.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "calibrate": "node tools/calibrate.mjs",
+    "check": "node tools/calibrate.mjs --check",
+    "build": "node tools/build.mjs",
+    "start": "python3 -m http.server 8080 --bind 0.0.0.0"
+  }
+}
