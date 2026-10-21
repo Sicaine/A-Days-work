@@ -1,8 +1,18 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { JOBS, WORKDAY, DAY_START, buildLayout } from './jobs.js';
 import { CALIBRATION } from './calibration.js';
 import { simulate, eventAt, fmtDuration, Grid, depotApproach } from './sim.js';
-import { buildWorld, makeWorker, SORT_NAMES } from './world.js';
+import { buildWorld, SORT_NAMES } from './world.js';
+import { makeWorker } from './worker.js';
+import { Particles } from './fx.js';
 
 // The working life. Change these to change the arithmetic of the end screen.
 const MIN_WAGE = 13.9; // € per hour, German statutory minimum wage 2026
@@ -22,25 +32,95 @@ const store = {
 
 // ---------- three.js setup ----------
 const canvas = $('c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+const coarse = matchMedia('(pointer: coarse)').matches;
+const quality = coarse ? 0.4 : 1;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(coarse ? 1.5 : 2, devicePixelRatio));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 500);
-const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 600);
+const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
 const sun = new THREE.DirectionalLight(0xffffff, 2.2);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 160 });
-sun.shadow.bias = -0.0005;
+sun.shadow.mapSize.set(coarse ? 1024 : 2048, coarse ? 1024 : 2048);
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
 scene.add(hemi, sun, sun.target);
-scene.fog = new THREE.Fog(0xffffff, 60, 180);
+scene.fog = new THREE.FogExp2(0xffffff, 0.01);
+
+const sky = new Sky();
+sky.scale.setScalar(450);
+scene.add(sky);
+const roomEnv = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+
+// post: bloom, tone mapping, then a gentle grade (vignette + film grain)
+const GradeShader = {
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) } },
+  vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse; uniform float uTime; uniform vec2 uRes; varying vec2 vUv;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main() {
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      float l = dot(c, vec3(0.299, 0.587, 0.114));
+      c = mix(vec3(l), c, 1.08);
+      float d = distance(vUv, vec2(0.5)) * 1.25;
+      c *= mix(1.0, 0.62, smoothstep(0.35, 1.0, d));
+      c += (hash(vUv * uRes + fract(uTime) * 100.0) - 0.5) * 0.035;
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+};
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType }));
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.3, 0.6, 0.9);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+const fxaa = new ShaderPass(FXAAShader);
+composer.addPass(fxaa);
+const grade = new ShaderPass(GradeShader);
+composer.addPass(grade);
+
+const fx = { soft: new Particles(2500), glow: new Particles(3500, { additive: true }) };
+scene.add(fx.soft.points, fx.glow.points);
+
+// the ring that shows what you're working on and how far along you are
+const marker = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+  new THREE.ShaderMaterial({
+    uniforms: { uProgress: { value: 0 }, uTime: { value: 0 }, uColor: { value: new THREE.Color(0xe9c46a) } },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: /* glsl */`
+      varying vec2 vUv; uniform float uProgress; uniform float uTime; uniform vec3 uColor;
+      void main() {
+        vec2 p = vUv - 0.5; float r = length(p) * 2.0;
+        float a = fract(atan(p.x, -p.y) / 6.2831853 + 1.0);
+        float band = smoothstep(0.74, 0.78, r) * (1.0 - smoothstep(0.92, 0.96, r));
+        float base = band * (0.28 + 0.1 * sin(uTime * 4.0));
+        float prog = band * step(a, uProgress) * 1.4;
+        float glow = (1.0 - smoothstep(0.0, 0.78, r)) * 0.08;
+        float alpha = max(base, prog) + glow;
+        if (alpha < 0.01) discard;
+        gl_FragColor = vec4(uColor * (prog > 0.0 ? 2.2 : 1.0), alpha);
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+  }),
+);
+marker.renderOrder = 5;
+marker.visible = false;
+scene.add(marker);
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
+  composer.setPixelRatio(renderer.getPixelRatio());
+  composer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  grade.uniforms.uRes.value.set(innerWidth, innerHeight);
+  const pr = renderer.getPixelRatio();
+  fxaa.material.uniforms.resolution.value.set(1 / (innerWidth * pr), 1 / (innerHeight * pr));
+  for (const p of Object.values(fx)) p.setScale(innerHeight * renderer.getPixelRatio(), camera.fov);
 }
 addEventListener('resize', resize);
 resize();
@@ -66,34 +146,60 @@ function loadJob(i) {
   world?.dispose();
   worker?.group.removeFromParent();
   ghost?.group.removeFromParent();
-  world = buildWorld(job, layout);
+  world = buildWorld(job, layout, { fx, quality });
   scene.add(world.group);
   worker = makeWorker(job);
   ghost = makeWorker(job, { ghost: true });
-  scene.background = new THREE.Color(world.env.sky);
-  scene.fog.color.set(world.env.fog);
-  hemi.groundColor.set(world.env.hemiGround);
+  const env = world.env;
+  sky.visible = env.outdoor;
+  if (env.sky) for (const [k, v] of Object.entries(env.sky)) sky.material.uniforms[k].value = v;
+  scene.background = env.outdoor ? null : new THREE.Color(env.background);
+  scene.environment = env.envMap ? roomEnv : null;
+  scene.fog.density = env.fogDensity;
+  [bloom.strength, bloom.radius, bloom.threshold] = env.bloom;
+  renderer.toneMappingExposure = env.exposure;
+  Object.assign(sun.shadow.camera, { left: -env.shadow, right: env.shadow, top: env.shadow, bottom: -env.shadow, near: 1, far: 200 });
+  sun.shadow.camera.updateProjectionMatrix();
+  layout.depotTotals = layout.depots.map((_, k) => layout.depotOf.filter((d) => d === k).length);
   store.set('adayswork:last', job.id);
 }
 
+// How full each depot looks: delivered items per depot.
+function deliveredCounts(picked, load) {
+  const c = layout.depots.map(() => 0), inHand = new Set(load);
+  for (let i = 0; i < picked.length; i++) if (picked[i] && !inHand.has(i)) c[layout.depotOf[i]]++;
+  return c;
+}
+function applyFills(counts) {
+  counts.forEach((n, k) => world.setFill(k, layout.depotTotals[k] ? n / layout.depotTotals[k] : 0));
+}
+
 // ---------- lighting by clock ----------
-const daySky = new THREE.Color(), duskSky = new THREE.Color(0xe7a774), tmpC = new THREE.Color();
+// The sun rises at 05:30 and sets at 19:30; the work clock drives it.
+const sunInfo = { dir: new THREE.Vector3(), elev: 1, warm: 0 };
+const fogDay = new THREE.Color(), fogDusk = new THREE.Color(), night = new THREE.Color(0x1a2030);
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 function setDaylight(clockSec, focus) {
+  const env = world.env;
   const h = clockSec / 3600;
-  const f = Math.min(1, Math.max(0, (h - 6) / 15)); // 06:00 sunrise .. 21:00 sunset
-  const elev = Math.sin(Math.PI * f);
-  const az = Math.PI * (0.15 + 0.7 * f);
-  sun.position.set(focus.x + Math.cos(az) * 60, 6 + elev * 70, focus.z + Math.sin(az) * 30 - 20);
+  const f = (h - 5.5) / 14;
+  const el = Math.max(-0.15, Math.sin(Math.PI * Math.min(1.05, Math.max(-0.05, f)))) * 1.0;
+  const az = Math.PI * (0.5 + f);
+  const dir = sunInfo.dir.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).normalize();
+  const elev = Math.sin(el);
+  const warm = 1 - smooth(0.08, 0.5, elev);
+  sunInfo.elev = elev; sunInfo.warm = warm;
+  sun.position.copy(focus).addScaledVector(dir, 90);
   sun.target.position.copy(focus);
-  const dusk = Math.max(0, (h - 16) / 4.5); // warm after 16:00
-  sun.color.setRGB(1, 1 - 0.35 * Math.min(1, dusk), 1 - 0.6 * Math.min(1, dusk));
-  sun.intensity = 0.6 + 1.8 * Math.max(0.15, elev) * (1 - 0.5 * Math.min(1, dusk));
-  daySky.set(world.env.sky);
-  tmpC.copy(daySky).lerp(duskSky, Math.min(0.8, dusk * 0.8));
-  if (h > 20) tmpC.lerp(new THREE.Color(0x1d2433), Math.min(1, (h - 20) / 1.5));
-  scene.background.copy(tmpC);
-  scene.fog.color.copy(tmpC);
-  hemi.intensity = 0.5 + 0.8 * Math.max(0.2, elev);
+  sun.color.setRGB(1, 0.96 - warm * 0.36, 0.9 - warm * 0.62);
+  sun.intensity = env.sun * (0.15 + 0.85 * smooth(-0.02, 0.3, elev));
+  sky.material.uniforms.sunPosition.value.copy(dir);
+  fogDay.set(env.fogDay); fogDusk.set(env.fogDusk);
+  scene.fog.color.copy(fogDay).lerp(fogDusk, warm * 0.85).lerp(night, smooth(0.05, -0.1, elev) * 0.8);
+  hemi.color.set(env.hemi[0]).lerp(fogDusk, warm * 0.35);
+  hemi.groundColor.set(env.hemi[1]);
+  hemi.intensity = env.hemi[2] * (0.35 + 0.65 * smooth(-0.05, 0.4, elev));
+  renderer.toneMappingExposure = env.exposure * (0.75 + 0.25 * smooth(-0.05, 0.25, elev));
 }
 
 // ---------- camera ----------
@@ -104,7 +210,9 @@ addEventListener('wheel', (e) => {
   zoom = Math.min(4, Math.max(0.5, zoom * (e.deltaY > 0 ? 1.1 : 0.9)));
 }, { passive: true });
 function followCamera(p, dt, dist = 1) {
-  camTarget.lerp(new THREE.Vector3(p.x, 0, p.z), Math.min(1, dt * 5));
+  // indoors, don't look out past the cut-away wall
+  const z = job.id === 'sorting' ? Math.min(p.z, layout.size.h / 2 - 5) : p.z;
+  camTarget.lerp(new THREE.Vector3(p.x, 0, z), Math.min(1, dt * 5));
   const d = 9.5 * zoom * dist;
   camera.position.set(camTarget.x, camTarget.y + d * 1.05, camTarget.z + d);
   camera.lookAt(camTarget.x, 0.6, camTarget.z);
@@ -198,6 +306,7 @@ function renderMenu() {
   // reset items to the saved state for the menu backdrop
   const picked = save && !save.done ? unpackBits(save.picked, layout.items.length) : null;
   for (let i = 0; i < layout.items.length; i++) world.setPicked(i, picked ? !!picked[i] : false);
+  applyFills(picked ? deliveredCounts(picked, save.load) : layout.depots.map(() => 0));
 }
 
 $('prev').onclick = () => selectJob(jobIndex - 1);
@@ -220,6 +329,7 @@ function toMenu() {
   if (mode === 'work') saveGame();
   onBreak = false;
   mode = 'menu';
+  marker.visible = false;
   worker.group.removeFromParent(); ghost.group.removeFromParent(); trail?.removeFromParent();
   show('menu');
   renderMenu();
@@ -265,6 +375,8 @@ function startWork() {
   g.pickedCount = g.picked.reduce((s, v) => s + v, 0);
   g.grid = new Grid(layout.items, g.picked.map((v) => 1 - v), 3);
   for (let i = 0; i < n; i++) world.setPicked(i, !!g.picked[i]);
+  g.delivered = deliveredCounts(g.picked, g.load);
+  applyFills(g.delivered);
   scene.add(worker.group);
   worker.group.position.set(g.x, 0, g.z);
   camTarget.set(g.x, 0, g.z);
@@ -313,7 +425,8 @@ function workTick(dt) {
     g.brk += dt;
     $('b-time').textContent = fmtDuration(g.brk - g.breakStart);
     updateHud(null);
-    worker.animate(dt, false, false);
+    worker.animate(dt, { fatigue: g.work / WORKDAY });
+    marker.visible = false;
     return;
   }
   g.work += dt;
@@ -323,14 +436,21 @@ function workTick(dt) {
   if (!sameTarget) g.progress = 0;
   g.target = target;
 
-  let working = false, moving = false;
+  let working = false, moving = false, actionU = 0;
   if (actionHeld && target && target.kind !== 'wrong') {
     working = true;
     g.progress += dt;
     const need = target.kind === 'item' ? P.pickTime : P.dropFixed + P.dropPerItem * g.load.length;
+    actionU = Math.min(1, g.progress / need);
     if (target.kind === 'item') {
       const it = layout.items[target.i];
       g.facing = Math.atan2(it.x - g.x, it.z - g.z);
+      // shuffle to stand just in front of it (the simulator's pick overhead covers this)
+      const dx = it.x - g.x, dz = it.z - g.z, d = Math.hypot(dx, dz), want = 0.5;
+      if (d > 0.01 && Math.abs(d - want) > 0.05) {
+        const step = Math.sign(d - want) * Math.min(Math.abs(d - want), dt * 1.2);
+        g.x += (dx / d) * step; g.z += (dz / d) * step;
+      }
     }
     if (g.progress >= need) {
       g.progress = 0;
@@ -340,7 +460,11 @@ function workTick(dt) {
         g.pickedCount++;
         g.load.push(target.i);
         world.setPicked(target.i, true);
+        world.onPick(target.i);
       } else {
+        g.delivered[target.k] += g.load.length;
+        world.onDrop(target.k, g.load.length);
+        applyFills(g.delivered);
         g.load = [];
         pulseDepot(target.k);
         if (g.grid.count === 0) return finishDay();
@@ -375,10 +499,33 @@ function workTick(dt) {
   worker.group.rotation.y = lerpAngle(worker.group.rotation.y, g.facing, Math.min(1, dt * 12));
   const lastType = g.load.length ? layout.items[g.load[g.load.length - 1]].type : 0;
   worker.setCarry(g.load.length, lastType);
-  worker.animate(dt, moving, working, (g.load.length ? P.speedLoaded : P.speedEmpty) / 1.4);
+  worker.animate(dt, {
+    moving, speed: g.load.length ? P.speedLoaded : P.speedEmpty, fatigue: g.work / WORKDAY,
+    action: working ? (target.kind === 'item' ? 'pick' : 'drop') : null, u: actionU,
+  });
+  updateMarker(g.target, g.progress);
 
   updateHud(target, working);
   if (g.work - g.lastSave > 5) { g.lastSave = g.work; saveGame(); }
+}
+
+function updateMarker(target, progress) {
+  const P = job.params, u = marker.material.uniforms;
+  if (!target) { marker.visible = false; return; }
+  marker.visible = true;
+  if (target.kind === 'item') {
+    const it = layout.items[target.i];
+    marker.position.set(it.x, 0.06, it.z);
+    marker.scale.setScalar(1.0);
+    u.uProgress.value = progress / P.pickTime;
+    u.uColor.value.set(0xe9c46a);
+  } else {
+    const d = layout.depots[target.k];
+    marker.position.set(d.x, 0.06, d.z);
+    marker.scale.setScalar((d.r + 0.9) * 2);
+    u.uProgress.value = target.kind === 'wrong' ? 0 : progress / (P.dropFixed + P.dropPerItem * g.load.length);
+    u.uColor.value.set(target.kind === 'wrong' ? 0xd0533a : 0xe9c46a);
+  }
 }
 
 function lerpAngle(a, b, t) {
@@ -407,7 +554,7 @@ function updateHud(target, working) {
     const diff = simAt - g.work;
     const rem = Math.max(0, sim.total - simAt);
     $('h-pace').textContent =
-      `${Math.abs(diff) < 60 ? 'On pace' : `${fmtDuration(Math.abs(diff), false).replace(/^0h /, '')} ${diff > 0 ? 'ahead of' : 'behind'}`} the simulated worker · done around ${clockStr(clock + rem)}`;
+      `${Math.abs(diff) < 60 ? 'On pace with' : `${fmtDuration(Math.abs(diff), false).replace(/^0h /, '')} ${diff > 0 ? 'ahead of' : 'behind'}`} the simulated worker · done around ${clockStr(clock + rem)}`;
   } else $('h-pace').textContent = 'Nothing done yet.';
   const left = n - done;
   $('h-left').textContent = `${nf.format(left)} ${left === 1 ? job.item[0] : job.item[1]} left`;
@@ -458,12 +605,13 @@ function finishDay() {
   $('e-days').textContent = `That was ${which}. Only ${nf.format(left)} left.`;
   $('e-foot').textContent = `Working from ${START_AGE} to ${RETIRE_AGE}, ${WORKDAYS_PER_YEAR} days a year: ${nf.format(WORKING_LIFE_DAYS)} days.`;
   worker.setCarry(0);
+  marker.visible = false;
 }
 
 // ---------- watch the simulation ----------
 const SPEEDS = [1, 10, 60, 300, 1200, 3600];
 let speedIdx = 2, watchPaused = false, simT = 0, evIdx = 0, trail = null, trailN = 0;
-let trailPos = null;
+let trailPos = null, watchDelivered = [];
 
 function startWatch() {
   mode = 'watch';
@@ -485,6 +633,8 @@ function startWatch() {
 
 function restartWatch() {
   simT = 0; evIdx = 0; trailN = 0; watchPaused = false;
+  watchDelivered = layout.depots.map(() => 0);
+  applyFills(watchDelivered);
   $('w-pause').textContent = 'Pause (Space)';
   for (let i = 0; i < layout.items.length; i++) world.setPicked(i, false);
   pushTrail(layout.start.x, layout.start.z);
@@ -515,8 +665,13 @@ function watchTick(dt) {
   const ev = sim.events;
   while (evIdx < ev.length && ev[evIdx].t1 <= simT) {
     const e = ev[evIdx];
-    if (e.k === 1) world.setPicked(e.i, true);
+    if (e.k === 1) { world.setPicked(e.i, true); if (SPEEDS[speedIdx] <= 60) world.onPick(e.i); }
     if (e.k === 0) pushTrail(e.x1, e.z1);
+    if (e.k === 2) {
+      watchDelivered[e.d] += e.n;
+      applyFills(watchDelivered);
+      if (SPEEDS[speedIdx] <= 300) world.onDrop(e.d, e.n);
+    }
     evIdx++;
   }
   const e = ev[Math.min(ev.length - 1, eventAt(ev, simT))];
@@ -530,7 +685,10 @@ function watchTick(dt) {
   const carryType = job.id === 'sorting' ? lastCarriedType(evIdx) : 0;
   ghost.setCarry(carryN, carryType);
   const realDt = watchPaused ? 0 : dt * Math.min(SPEEDS[speedIdx], 30);
-  ghost.animate(realDt, e.k === 0 && !watchPaused, e.k !== 0 && !watchPaused, 1);
+  ghost.animate(realDt, {
+    moving: e.k === 0 && !watchPaused, speed: e.n ? job.params.speedLoaded : job.params.speedEmpty, fatigue: simT / sim.total,
+    action: e.k === 1 ? 'pick' : e.k === 2 ? 'drop' : null, u: e.k === 1 ? Math.min(1, f / (1 - job.params.pickOverhead / (job.params.pickTime + job.params.pickOverhead))) : f,
+  });
 
   const tripsDone = sim.trips.filter((t) => t.t1 <= simT).length;
   const picked = lowerBound(sim.pickTimes, simT);
@@ -621,6 +779,21 @@ function drawChart(T) {
   c.beginPath(); c.moveTo(X(T) + 0.5, 4); c.lineTo(X(T) + 0.5, Y(0)); c.stroke();
 }
 
+// Dynamic resolution: keep the frame rate up on modest GPUs.
+const maxRatio = Math.min(coarse ? 1.5 : 2, devicePixelRatio);
+let ratio = maxRatio, fpsT = 0, fpsN = 0, settle = 2;
+function adaptResolution(dt) {
+  fpsT += dt; fpsN++;
+  if (fpsT < 1) return;
+  const fps = fpsN / fpsT;
+  fpsT = 0; fpsN = 0;
+  if (settle > 0) { settle--; return; }
+  let next = ratio;
+  if (fps < 45) next = Math.max(0.6, ratio - (fps < 30 ? 0.25 : 0.1));
+  else if (fps > 58 && ratio < maxRatio) next = Math.min(maxRatio, ratio + 0.1);
+  if (next !== ratio) { ratio = next; renderer.setPixelRatio(ratio); resize(); settle = 1; }
+}
+
 // ---------- main loop ----------
 const clock = new THREE.Clock();
 let menuAngle = 0;
@@ -651,8 +824,13 @@ function frame() {
     if (m) { m.userData.base ??= m.scale.clone(); m.scale.copy(m.userData.base).multiplyScalar(s); }
     if (pulse.t > 0.5) pulse = null;
   }
-  if (world.env.coreLight) world.env.coreLight.intensity = 36 + Math.sin(performance.now() / 400) * 6;
-  renderer.render(scene, camera);
+  const t = performance.now() / 1000;
+  world.update(dt, t, sunInfo);
+  fx.soft.update(dt); fx.glow.update(dt);
+  marker.material.uniforms.uTime.value = t;
+  grade.uniforms.uTime.value = t;
+  composer.render(dt);
+  adaptResolution(dt);
   requestAnimationFrame(frame);
 }
 
@@ -663,3 +841,5 @@ loadJob(jobIndex);
 show('menu');
 renderMenu();
 frame();
+
+if (new URLSearchParams(location.search).has('debug')) window.__adw = { renderer, composer, bloom, scene, sun, fx, get world() { return world; } };

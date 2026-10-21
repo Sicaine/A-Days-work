@@ -24,6 +24,8 @@ Use ← → in the menu to choose.
 | 📦 | **The Floor**: sort everything into the bin of its colour | 1 thing | 1,040 | 1,040 | 37.1 km |
 | 🔥 | **The Core**: throw every log into the core | 2 logs (heavy) | 900 | 450 | 30.7 km |
 
+![The Floor](docs/floor.png)
+
 ![The Core](docs/core.png)
 
 ## The simulator
@@ -69,7 +71,8 @@ Nobody plays 8 hours in one go. Come back to it during the day.
 
 ## Running locally
 
-The game is static: no bundler and no dependencies. three.js is vendored in `vendor/`.
+The game is static: no bundler and no dependencies. three.js and the add-ons it uses (post-processing, sky, FXAA) are vendored in `vendor/`.
+The resolution adapts automatically to keep the frame rate up on modest GPUs.
 
 ```sh
 npm start              # serves on 0.0.0.0:8080 -> http://localhost:8080 or http://<your-ip>:8080
@@ -77,6 +80,8 @@ npm run calibrate      # re-size the jobs to 8 hours
 npm run check          # verify the calibration is current
 npm run build          # copy the site to _site/
 ```
+
+`tools/worker-preview.html` shows the worker in a lineup of poses (add `?view=side` for the side view).
 
 Requires Node 24+ for the tools only.
 

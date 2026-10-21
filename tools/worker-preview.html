@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- Dev tool: the worker in a lineup of poses. Serve the repo root and open /tools/worker-preview.html -->
+<html><head><meta charset="utf-8"><title>Worker preview</title>
+<style>html,body{margin:0;height:100%;background:#2b2a28}canvas{display:block;width:100%;height:100%}</style>
+<script type="importmap">{ "imports": { "three": "../vendor/three.module.js", "three/addons/": "../vendor/addons/" } }</script>
+</head><body><canvas id="c"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { JOBS } from '../src/jobs.js';
+import { makeWorker } from '../src/worker.js';
+const q = new URLSearchParams(location.search);
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
+renderer.setPixelRatio(devicePixelRatio); renderer.setSize(innerWidth, innerHeight, false);
+renderer.shadowMap.enabled = true; renderer.toneMapping = THREE.ACESFilmicToneMapping;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x4a4844);
+const cam = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 100);
+const view = q.get('view') || 'front';
+const sun = new THREE.DirectionalLight(0xffffff, 2.5); sun.position.set(3, 6, 5); sun.castShadow = true;
+Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 4, bottom: -2 }); sun.shadow.mapSize.set(2048, 2048);
+scene.add(sun, new THREE.HemisphereLight(0xdde8ff, 0x554433, 1.1));
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 20), new THREE.MeshStandardMaterial({ color: 0x8a8378 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+const J = Object.fromEntries(JOBS.map((j) => [j.id, j]));
+const poses = [
+  ['weeds', 'idle', {}, 0],
+  ['weeds', 'walk', { moving: true, speed: 1.35 }, 0],
+  ['weeds', 'reach', { action: 'pick', u: 0.25 }, 0],
+  ['weeds', 'tug', { action: 'pick', u: 0.55 }, 0],
+  ['weeds', 'toss', { action: 'pick', u: 0.97 }, 8],
+  ['weeds', 'bag walk', { moving: true, speed: 1.35 }, 22],
+  ['weeds', 'dump', { action: 'drop', u: 0.5 }, 25],
+  ['sorting', 'pick', { action: 'pick', u: 0.4 }, 0],
+  ['sorting', 'carry', { moving: true, speed: 1.4 }, 1],
+  ['core', 'logs', { moving: true, speed: 1.05 }, 2],
+  ['core', 'swing', { action: 'drop', u: 0.33 }, 2],
+  ['core', 'heave', { action: 'drop', u: 0.47 }, 2],
+  ['weeds', 'tired', { fatigue: 1 }, 0],
+];
+const W = poses.length, gap = 1.1;
+poses.forEach(([id, label, st, carry], k) => {
+  const w = makeWorker(J[id]);
+  w.setCarry(carry, 1);
+  for (let i = 0; i < 90; i++) w.animate(1 / 60, { ...st, u: st.u ?? 0 });
+  w.group.position.x = (k - (W - 1) / 2) * gap;
+  if (view === 'side') w.group.rotation.y = Math.PI / 2;
+  scene.add(w.group);
+});
+const span = W * gap;
+if (q.get('zoom')) { const k = +q.get('zoom'); const x = (k - (W - 1) / 2) * gap; cam.position.set(x + 0.35, 1.62, 0.9); cam.lookAt(x, 1.55, 0); }
+else { const d = span * 0.66; cam.position.set(view === 'side' ? 0 : 0, 1.2, d); cam.lookAt(0, 0.8, 0); }
+renderer.render(scene, cam);
+</script></body></html>
